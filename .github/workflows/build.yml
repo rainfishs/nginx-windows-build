@@ -1,6 +1,8 @@
 name: build nginx for Windows with headers-more
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       arch:
