@@ -6,7 +6,7 @@
 
 | 元件 | 版本 | 來源 | 驗證方式 |
 |---|---|---|---|
-| nginx | 1.30.5 | github.com/nginx/nginx | commit `4556c714` |
+| nginx | 1.31.6 | github.com/nginx/nginx | commit `0a5db852` |
 | headers-more | v0.40 | github.com/openresty/headers-more-nginx-module | commit `0bf283ff` |
 | OpenSSL | 3.5.8 | github.com/openssl/openssl releases | SHA256 |
 | zlib | 1.3.2 | github.com/madler/zlib releases | SHA256 |

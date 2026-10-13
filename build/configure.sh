@@ -15,7 +15,8 @@ cd "$(dirname "$0")/../nginx"
 
 OBJS=objs.msvc8
 
-# Copied from misc/GNUmakefile (target "win32") of nginx 1.30.5.
+# Copied from misc/GNUmakefile (target "win32") of nginx 1.30.5;
+# identical in 1.31.6.
 args=(
     --with-cc=cl
     --builddir=$OBJS

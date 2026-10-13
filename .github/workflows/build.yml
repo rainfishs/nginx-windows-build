@@ -25,8 +25,8 @@ jobs:
     env:
       ARCH: ${{ inputs.arch || 'x64' }}
 
-      NGINX_VERSION: 1.30.5
-      NGINX_COMMIT: 4556c714d1cfa587f92c7c0365c09209d42d148b   # tag release-1.30.5
+      NGINX_VERSION: 1.31.6
+      NGINX_COMMIT: 0a5db852e18d1c22c62a5ede1412ac3f416111a0   # tag release-1.31.6
 
       HEADERS_MORE_VERSION: v0.40
       HEADERS_MORE_COMMIT: 0bf283ff92017acd616814b0e5153e0ccf93e2c9   # tag v0.40
