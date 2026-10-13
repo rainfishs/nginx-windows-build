@@ -1,0 +1,217 @@
+name: build nginx for Windows with headers-more
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: CPU architecture
+        type: choice
+        options: [x64, x86]
+        default: x64
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # VS 2022 (v17) is listed as known to work in
+    # https://nginx.org/en/docs/howto_build_on_win32.html;
+    # windows-latest ships VS 2026.
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    env:
+      ARCH: ${{ inputs.arch || 'x64' }}
+
+      NGINX_VERSION: 1.30.5
+      NGINX_COMMIT: 4556c714d1cfa587f92c7c0365c09209d42d148b   # tag release-1.30.5
+
+      HEADERS_MORE_VERSION: v0.40
+      HEADERS_MORE_COMMIT: 0bf283ff92017acd616814b0e5153e0ccf93e2c9   # tag v0.40
+
+      # Same versions as the official build (nginx misc/GNUmakefile).
+      # SHA256 cross-checked with openssl .sha256 file, zlib.net and
+      # GitHub release asset digests.
+      OPENSSL: openssl-3.5.8
+      OPENSSL_SHA256: a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+      ZLIB: zlib-1.3.2
+      ZLIB_SHA256: bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+      PCRE: pcre2-10.48
+      PCRE_SHA256: ebcc25aadf2a51fa1fefa9b8bc9e7a79b3dae86870a0f1152a22e42befd46888
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # nginx's configure is a shell script and breaks with CRLF.
+      - name: Disable CRLF conversion
+        run: git config --global core.autocrlf false
+
+      - name: Checkout this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout nginx
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: nginx/nginx
+          ref: ${{ env.NGINX_COMMIT }}
+          path: nginx
+          persist-credentials: false
+
+      - name: Checkout headers-more
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: openresty/headers-more-nginx-module
+          ref: ${{ env.HEADERS_MORE_COMMIT }}
+          path: headers-more
+          persist-credentials: false
+
+      - name: Check nginx version
+        run: |
+          grep -E "define NGINX_VERSION[[:space:]]+\"$NGINX_VERSION\"" \
+              nginx/src/core/nginx.h
+
+      - name: Download and verify libraries
+        run: |
+          mkdir -p dl nginx/objs.msvc8/lib
+
+          fetch() {
+              local f="dl/${1##*/}"
+              curl -fsSL --retry 3 -o "$f" "$1"
+              echo "$2  $f" | sha256sum -c -
+              tar -xzf "$f" -C nginx/objs.msvc8/lib
+          }
+
+          fetch "https://github.com/openssl/openssl/releases/download/$OPENSSL/$OPENSSL.tar.gz" "$OPENSSL_SHA256"
+          fetch "https://github.com/madler/zlib/releases/download/v${ZLIB#zlib-}/$ZLIB.tar.gz" "$ZLIB_SHA256"
+          fetch "https://github.com/PCRE2Project/pcre2/releases/download/$PCRE/$PCRE.tar.gz" "$PCRE_SHA256"
+
+          ls nginx/objs.msvc8/lib
+          test -d "nginx/objs.msvc8/lib/$OPENSSL"
+          test -d "nginx/objs.msvc8/lib/$ZLIB"
+          test -d "nginx/objs.msvc8/lib/$PCRE"
+
+      # MSVC builds nginx with the precompiled header ngx_config.h
+      # (-Yungx_config.h), so every .c file must include it first.
+      # headers-more includes it via ddebug.h, which fails with
+      # C4603/C2143, see headers-more issues #24 and #167.
+      - name: Patch headers-more for MSVC precompiled header
+        run: |
+          for f in headers-more/src/*.c; do
+              sed -i '1i #include <ngx_config.h>' "$f"
+              head -1 "$f"
+          done
+
+      - name: Locate Visual Studio
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+          if (-not $vs) { throw 'Visual C++ tools not found' }
+          "VSINSTALL=$vs" >> $env:GITHUB_ENV
+
+      - name: Configure and build
+        shell: cmd
+        run: |
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" %ARCH%
+          if errorlevel 1 exit /b 1
+
+          rem OpenSSL needs a native Windows perl, not the MSYS one.
+          set "PATH=C:\Strawberry\perl\bin;%PATH%"
+          where perl
+          perl -MConfig -e "exit($Config{osname} eq 'MSWin32' ? 0 : 1)"
+          if errorlevel 1 (echo ::error::perl on PATH is not a Windows perl & exit /b 1)
+
+          "C:\Program Files\Git\bin\bash.exe" build/configure.sh
+          if errorlevel 1 exit /b 1
+
+          cd nginx
+          nmake
+          if errorlevel 1 exit /b 1
+
+      - name: Test that the Server header is removed
+        run: |
+          t=smoke
+          mkdir -p $t/conf $t/logs $t/temp $t/html
+          cp nginx/objs.msvc8/nginx.exe $t/
+          cp nginx/conf/mime.types $t/conf/
+          echo ok > $t/html/index.html
+
+          cat > $t/conf/nginx.conf <<'EOF'
+          worker_processes  1;
+          events { worker_connections  64; }
+          http {
+              include  mime.types;
+              more_clear_headers  Server;
+              server {
+                  listen  127.0.0.1:8080;
+                  location / { root html; }
+              }
+          }
+          EOF
+
+          cd $t
+          ./nginx.exe -V
+          ./nginx.exe -t
+
+          ./nginx.exe &
+          trap './nginx.exe -s stop || true' EXIT
+          sleep 3
+
+          curl -sS -D headers.txt -o /dev/null http://127.0.0.1:8080/
+          cat headers.txt
+
+          grep -q '^HTTP/1.1 200' headers.txt
+          if grep -qi '^server:' headers.txt; then
+              echo "::error::Server header is still present"
+              exit 1
+          fi
+
+      - name: Package
+        run: |
+          name="nginx-$NGINX_VERSION-headers-more-$HEADERS_MORE_VERSION-$ARCH"
+          d="dist/$name"
+          lib=nginx/objs.msvc8/lib
+
+          mkdir -p "$d"/{conf,html,logs,temp,docs}
+          cp nginx/objs.msvc8/nginx.exe "$d/"
+          cp nginx/conf/* "$d/conf/"
+          cp nginx/docs/html/* "$d/html/"
+
+          cp nginx/LICENSE "$d/docs/nginx.LICENSE"
+          cp "$lib/$OPENSSL/LICENSE.txt" "$d/docs/OpenSSL.LICENSE"
+          cp "$lib/$PCRE/LICENCE.md" "$d/docs/PCRE.LICENCE"
+          sed -ne '/^ (C) 1995-20/,/^  jloup@gzip\.org/p' "$lib/$ZLIB/README" \
+              > "$d/docs/zlib.LICENSE"
+          cp headers-more/README.markdown "$d/docs/headers-more.README.md"
+
+          {
+              echo "nginx         $NGINX_VERSION  (nginx/nginx $NGINX_COMMIT)"
+              echo "headers-more  $HEADERS_MORE_VERSION  (openresty/headers-more-nginx-module $HEADERS_MORE_COMMIT)"
+              echo "$OPENSSL  sha256 $OPENSSL_SHA256"
+              echo "$ZLIB     sha256 $ZLIB_SHA256"
+              echo "$PCRE     sha256 $PCRE_SHA256"
+              echo "arch          $ARCH"
+              echo "built by      $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              echo
+              "$d/nginx.exe" -V 2>&1
+              echo
+              (cd "$d" && sha256sum nginx.exe)
+          } > "$d/BUILD-INFO.txt"
+
+          cat "$d/BUILD-INFO.txt"
+          { echo '```'; cat "$d/BUILD-INFO.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "PKG_NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: ${{ env.PKG_NAME }}
+          path: dist/${{ env.PKG_NAME }}
+          if-no-files-found: error
