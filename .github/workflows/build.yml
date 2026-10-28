@@ -25,7 +25,7 @@ jobs:
     env:
       ARCH: ${{ inputs.arch || 'x64' }}
 
-      NGINX_VERSION: 1.31.6
+      NGINX_VERSION: 1.31.7
       HEADERS_MORE_VERSION: v0.40
 
       # Which library versions are used comes from nginx's
