@@ -20,16 +20,79 @@ on:
 permissions:
   contents: read
 
+# One run at a time, so two runs cannot build the same release.
+concurrency:
+  group: ${{ github.workflow }}
+
+env:
+  ARCH: ${{ inputs.arch || 'x64' }}
+
 jobs:
+  # Latest releases, unless versions were given when running the
+  # workflow manually. Nothing is built if that release already exists.
+  resolve:
+    runs-on: ubuntu-latest
+
+    outputs:
+      nginx: ${{ steps.v.outputs.nginx }}
+      headers_more: ${{ steps.v.outputs.headers_more }}
+      name: ${{ steps.v.outputs.name }}
+      exists: ${{ steps.v.outputs.exists }}
+
+    steps:
+      - id: v
+        env:
+          WANT_NGINX: ${{ inputs.nginx_version }}
+          WANT_HEADERS_MORE: ${{ inputs.headers_more_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest() {
+              git ls-remote --tags --refs "$1" | sed 's#.*refs/tags/##' \
+                  | grep -E "$2" | sort -V | tail -1
+          }
+
+          nginx=${WANT_NGINX:-$(latest https://github.com/nginx/nginx \
+                                       '^release-[0-9]+\.[0-9]+\.[0-9]+$')}
+          nginx=${nginx#release-}
+          headers_more=${WANT_HEADERS_MORE:-$(latest https://github.com/openresty/headers-more-nginx-module \
+                                                     '^v[0-9]+\.[0-9]+$')}
+          test -n "$nginx"
+          test -n "$headers_more"
+
+          name="nginx-$nginx-headers-more-$headers_more-$ARCH"
+
+          if gh release view "$name" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              exists=true
+              echo "::notice::Release $name already exists, nothing to build"
+          else
+              exists=false
+          fi
+
+          {
+              echo "nginx=$nginx"
+              echo "headers_more=$headers_more"
+              echo "name=$name"
+              echo "exists=$exists"
+          } | tee -a "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
+    if: needs.resolve.outputs.exists != 'true'
+
     # VS 2022 (v17) is listed as known to work in
     # https://nginx.org/en/docs/howto_build_on_win32.html;
     # windows-latest ships VS 2026.
     runs-on: windows-2022
     timeout-minutes: 60
 
+    # To publish the release.
+    permissions:
+      contents: write
+
     env:
-      ARCH: ${{ inputs.arch || 'x64' }}
+      NGINX_VERSION: ${{ needs.resolve.outputs.nginx }}
+      HEADERS_MORE_VERSION: ${{ needs.resolve.outputs.headers_more }}
+      PKG_NAME: ${{ needs.resolve.outputs.name }}
 
     defaults:
       run:
@@ -39,28 +102,6 @@ jobs:
       # nginx's configure is a shell script and breaks with CRLF.
       - name: Disable CRLF conversion
         run: git config --global core.autocrlf false
-
-      # Latest releases, unless versions were given when running the
-      # workflow manually.
-      - name: Resolve versions
-        env:
-          WANT_NGINX: ${{ inputs.nginx_version }}
-          WANT_HEADERS_MORE: ${{ inputs.headers_more_version }}
-        run: |
-          latest() {
-              git ls-remote --tags --refs "$1" | sed 's#.*refs/tags/##' \
-                  | grep -E "$2" | sort -V | tail -1
-          }
-
-          nginx=${WANT_NGINX:-$(latest https://github.com/nginx/nginx \
-                                       '^release-[0-9]+\.[0-9]+\.[0-9]+$')}
-          headers_more=${WANT_HEADERS_MORE:-$(latest https://github.com/openresty/headers-more-nginx-module \
-                                                     '^v[0-9]+\.[0-9]+$')}
-
-          test -n "$nginx"
-          test -n "$headers_more"
-          echo "NGINX_VERSION=${nginx#release-}" | tee -a "$GITHUB_ENV"
-          echo "HEADERS_MORE_VERSION=$headers_more" | tee -a "$GITHUB_ENV"
 
       - name: Checkout this repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -203,8 +244,7 @@ jobs:
 
       - name: Package
         run: |
-          name="nginx-$NGINX_VERSION-headers-more-$HEADERS_MORE_VERSION-$ARCH"
-          d="dist/$name"
+          d="dist/$PKG_NAME"
           lib="nginx/$OBJS/lib"
 
           mkdir -p "$d"/{conf,html,logs,temp,docs}
@@ -232,14 +272,19 @@ jobs:
               (cd "$d" && sha256sum nginx.exe)
           } > "$d/BUILD-INFO.txt"
 
-          cat "$d/BUILD-INFO.txt"
-          { echo '```'; cat "$d/BUILD-INFO.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; cat "$d/BUILD-INFO.txt"; echo '```'; } > dist/notes.md
+          cat dist/notes.md | tee -a "$GITHUB_STEP_SUMMARY"
 
-          echo "PKG_NAME=$name" >> "$GITHUB_ENV"
+          # Windows' own tar (bsdtar) writes zip and keeps the empty
+          # logs/ and temp/ directories nginx needs.
+          (cd dist && /c/Windows/System32/tar.exe --format zip -cf "$PKG_NAME.zip" "$PKG_NAME")
 
-      - name: Upload
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
-        with:
-          name: ${{ env.PKG_NAME }}
-          path: dist/${{ env.PKG_NAME }}
-          if-no-files-found: error
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$PKG_NAME" "dist/$PKG_NAME.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$PKG_NAME" \
+              --notes-file dist/notes.md

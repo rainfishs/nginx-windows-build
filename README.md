@@ -22,14 +22,17 @@
 
 - configure 指令直接取自 nginx 原始碼 `misc/GNUmakefile` 的 `win32` target（官方 Windows 版用的那一條），只多加 `--add-module=../headers-more`。
 - 編譯器用 MSVC（VS 2022），跟官方相同。
-- build 完會實際啟動 nginx，用 `more_clear_headers Server;` 打一次 request，確認 `Server` 標頭真的不見了，才會產出檔案。
+- build 完會實際啟動 nginx，用 `more_clear_headers Server;` 打一次 request，確認 `Server` 標頭真的不見了，才會發佈。
 
 ## 使用方式
 
-1. 到 Actions → **build nginx for Windows with headers-more** → **Run workflow**。版本欄位留空就是最新版，要編特定版本就填進去。push 到 main 也會自動編最新版。
-2. 跑完後在該次 run 頁面下載 artifact（zip），檔名裡有實際編的版本。`BUILD-INFO.txt` 和 run summary 裡有 `nginx -V` 輸出和 `nginx.exe` 的 SHA256。
+1. 到 Actions → **build nginx for Windows with headers-more** → **Run workflow**。版本欄位留空就是最新版，要編特定版本就填進去。push 到 main 也會自動跑一次。
+2. 編好的 zip 會發佈在 repo 的 **Releases** 頁面，名稱裡有實際編的版本，永久保留。說明欄有 `nginx -V` 輸出和 `nginx.exe` 的 SHA256。
 
 nginx 出新版（例如修 CVE）時，直接 Run workflow 就好，不用改任何檔案。
+
+- 同樣版本組合已經有 Release 時，workflow 不會重編，直接結束。要重編同一版，先在 Releases 頁面刪掉那個 Release 和它的 tag。
+- 想在新版發佈時收到通知：repo 頁面右上 Watch → Custom → Releases。
 
 ## 部署
 
