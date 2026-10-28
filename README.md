@@ -2,17 +2,17 @@
 
 用 GitHub Actions 從官方原始碼編譯 Windows 版 nginx，加入 headers-more 模組，用來移除 `Server` 回應標頭。
 
-## 來源（全部釘死版本）
+## 來源
 
-| 元件 | 版本 | 來源 | 驗證方式 |
-|---|---|---|---|
-| nginx | 1.31.6 | github.com/nginx/nginx | commit `0a5db852` |
-| headers-more | v0.40 | github.com/openresty/headers-more-nginx-module | commit `0bf283ff` |
-| OpenSSL | 3.5.8 | github.com/openssl/openssl releases | SHA256 |
-| zlib | 1.3.2 | github.com/madler/zlib releases | SHA256 |
-| PCRE2 | 10.48 | github.com/PCRE2Project/pcre2 releases | SHA256 |
+版本設定只有一處：`.github/workflows/build.yml` 的 `env` 區塊。
 
-- configure 參數和函式庫版本都跟官方 Windows 版一樣（以 nginx 原始碼裡 `misc/GNUmakefile` 的 `win32` target 為準），唯一差別是多了 `--add-module=../headers-more`。build 時會自動比對，不一致就直接失敗。
+| 元件 | 來源 | 版本從哪來 |
+|---|---|---|
+| nginx | github.com/nginx/nginx（tag `release-<版本>`） | `NGINX_VERSION` |
+| headers-more | github.com/openresty/headers-more-nginx-module | `HEADERS_MORE_VERSION` |
+| OpenSSL、zlib、PCRE2 | 各自官方 GitHub releases | 讀 nginx 原始碼的 `misc/GNUmakefile`，跟官方 Windows 版相同；下載後比對 `DEPS_SHA256` |
+
+- configure 指令直接取自 nginx 原始碼 `misc/GNUmakefile` 的 `win32` target（官方 Windows 版用的那一條），只多加 `--add-module=../headers-more`。
 - 編譯器用 MSVC（VS 2022），跟官方相同。
 - build 完會實際啟動 nginx，用 `more_clear_headers Server;` 打一次 request，確認 `Server` 標頭真的不見了，才會產出檔案。
 
@@ -35,8 +35,8 @@
 
 ## 升級 nginx 版本
 
-1. 修改 `build.yml` 裡的 `NGINX_VERSION`、`NGINX_COMMIT`（tag `release-x.y.z` 指向的 commit）。
-2. 跑一次。如果新版官方 build 改了 OpenSSL、zlib、PCRE2 的版本或 configure 參數，build 會失敗並列出差異。照差異更新 `OPENSSL`/`ZLIB`/`PCRE`、對應的 SHA256 和 `build/configure.sh`。
+1. 修改 `build.yml` 裡的 `NGINX_VERSION`，push。
+2. 如果新版 nginx 官方換了 OpenSSL、zlib、PCRE2 的版本，build 會失敗並顯示 `xxx.tar.gz has no SHA256 in DEPS_SHA256`。到該函式庫的官方 release 頁面取得 SHA256，在 `DEPS_SHA256` 裡換掉對應那一行。
 
 ## 已知限制
 
