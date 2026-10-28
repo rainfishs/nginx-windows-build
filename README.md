@@ -4,13 +4,21 @@
 
 ## 來源
 
-版本設定只有一處：`.github/workflows/build.yml` 的 `env` 區塊。
+程式碼裡沒有寫任何版本號，每次執行時決定：
 
-| 元件 | 來源 | 版本從哪來 |
-|---|---|---|
-| nginx | github.com/nginx/nginx（tag `release-<版本>`） | `NGINX_VERSION` |
-| headers-more | github.com/openresty/headers-more-nginx-module | `HEADERS_MORE_VERSION` |
-| OpenSSL、zlib、PCRE2 | 各自官方 GitHub releases | 讀 nginx 原始碼的 `misc/GNUmakefile`，跟官方 Windows 版相同；下載後比對 `DEPS_SHA256` |
+| 元件 | 來源 | 版本 | 驗證 |
+|---|---|---|---|
+| nginx | github.com/nginx/nginx（tag `release-<版本>`） | 最新版，或執行時指定 | |
+| headers-more | github.com/openresty/headers-more-nginx-module | 最新版，或執行時指定 | |
+| OpenSSL、zlib、PCRE2 | 各自官方 GitHub releases | 跟官方 Windows 版相同（讀 nginx 原始碼的 `misc/GNUmakefile`） | 官方 GPG 簽章，公鑰在 `keys/` |
+
+`keys/` 裡公鑰的指紋（`gpg --show-keys keys/xxx.asc` 可以看）跟以下官方來源核對過：
+
+| 檔案 | 核對來源 |
+|---|---|
+| `openssl.asc` | openssl repo 的 `doc/fingerprints.txt` |
+| `zlib.asc` | keys.openpgp.org（email 已驗證，`madler@alumni.caltech.edu` 是 zlib.h 裡的作者信箱） |
+| `pcre2.asc` | pcre2 repo 的 `SECURITY.md` |
 
 - configure 指令直接取自 nginx 原始碼 `misc/GNUmakefile` 的 `win32` target（官方 Windows 版用的那一條），只多加 `--add-module=../headers-more`。
 - 編譯器用 MSVC（VS 2022），跟官方相同。
@@ -18,9 +26,10 @@
 
 ## 使用方式
 
-1. 在 GitHub 建一個 repo，把這個資料夾的內容 push 上去。
-2. 到 Actions → **build nginx for Windows with headers-more** → **Run workflow**。
-3. 跑完後在該次 run 頁面下載 artifact（zip）。`BUILD-INFO.txt` 和 run summary 裡有 `nginx -V` 輸出和 `nginx.exe` 的 SHA256。
+1. 到 Actions → **build nginx for Windows with headers-more** → **Run workflow**。版本欄位留空就是最新版，要編特定版本就填進去。push 到 main 也會自動編最新版。
+2. 跑完後在該次 run 頁面下載 artifact（zip），檔名裡有實際編的版本。`BUILD-INFO.txt` 和 run summary 裡有 `nginx -V` 輸出和 `nginx.exe` 的 SHA256。
+
+nginx 出新版（例如修 CVE）時，直接 Run workflow 就好，不用改任何檔案。
 
 ## 部署
 
@@ -33,10 +42,11 @@
 4. 執行 `nginx -t` 檢查設定，沒問題再啟動。
 5. 用 `curl -I https://你的網址/` 確認回應裡已經沒有 `Server:`。
 
-## 升級 nginx 版本
+## 什麼時候需要改檔案
 
-1. 修改 `build.yml` 裡的 `NGINX_VERSION`，push。
-2. 如果新版 nginx 官方換了 OpenSSL、zlib、PCRE2 的版本，build 會失敗並顯示 `xxx.tar.gz has no SHA256 in DEPS_SHA256`。到該函式庫的官方 release 頁面取得 SHA256，在 `DEPS_SHA256` 裡換掉對應那一行。
+只有函式庫換了簽章金鑰的時候。build 會失敗並顯示 `xxx.tar.gz has no valid signature by keys/xxx.asc`，這時從官方來源取得新公鑰，換掉 `keys/` 裡對應的檔案。
+
+- OpenSSL 目前的簽章子金鑰在 2027-05-26 到期，到時候可能要更新 `keys/openssl.asc`。
 
 ## 已知限制
 

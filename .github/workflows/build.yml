@@ -5,6 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      nginx_version:
+        description: nginx version, e.g. 1.31.8 (empty = latest)
+        default: ''
+      headers_more_version:
+        description: headers-more version, e.g. v0.41 (empty = latest)
+        default: ''
       arch:
         description: CPU architecture
         type: choice
@@ -25,18 +31,6 @@ jobs:
     env:
       ARCH: ${{ inputs.arch || 'x64' }}
 
-      NGINX_VERSION: 1.31.7
-      HEADERS_MORE_VERSION: v0.41
-
-      # Which library versions are used comes from nginx's
-      # misc/GNUmakefile, same as the official Windows build.
-      # SHA256 cross-checked with the openssl .sha256 file, zlib.net and
-      # GitHub release asset digests.
-      DEPS_SHA256: |
-        a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2  openssl-3.5.8.tar.gz
-        bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16  zlib-1.3.2.tar.gz
-        ebcc25aadf2a51fa1fefa9b8bc9e7a79b3dae86870a0f1152a22e42befd46888  pcre2-10.48.tar.gz
-
     defaults:
       run:
         shell: bash
@@ -45,6 +39,28 @@ jobs:
       # nginx's configure is a shell script and breaks with CRLF.
       - name: Disable CRLF conversion
         run: git config --global core.autocrlf false
+
+      # Latest releases, unless versions were given when running the
+      # workflow manually.
+      - name: Resolve versions
+        env:
+          WANT_NGINX: ${{ inputs.nginx_version }}
+          WANT_HEADERS_MORE: ${{ inputs.headers_more_version }}
+        run: |
+          latest() {
+              git ls-remote --tags --refs "$1" | sed 's#.*refs/tags/##' \
+                  | grep -E "$2" | sort -V | tail -1
+          }
+
+          nginx=${WANT_NGINX:-$(latest https://github.com/nginx/nginx \
+                                       '^release-[0-9]+\.[0-9]+\.[0-9]+$')}
+          headers_more=${WANT_HEADERS_MORE:-$(latest https://github.com/openresty/headers-more-nginx-module \
+                                                     '^v[0-9]+\.[0-9]+$')}
+
+          test -n "$nginx"
+          test -n "$headers_more"
+          echo "NGINX_VERSION=${nginx#release-}" | tee -a "$GITHUB_ENV"
+          echo "HEADERS_MORE_VERSION=$headers_more" | tee -a "$GITHUB_ENV"
 
       - name: Checkout this repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -75,25 +91,32 @@ jobs:
               echo "$v=$val" | tee -a "$GITHUB_ENV"
           done
 
+      # Each tarball must carry a valid signature by its project's
+      # release key in keys/.
       - name: Download and verify libraries
         run: |
           mkdir -p dl "nginx/$OBJS/lib"
-          echo "$DEPS_SHA256" > dl/SHA256SUMS
 
-          fetch() {
-              local f="${1##*/}"
-              if ! grep -q "  $f\$" dl/SHA256SUMS; then
-                  echo "::error::$f has no SHA256 in DEPS_SHA256 (build.yml)"
+          fetch() {   # tarball url, signature suffix, key file
+              local f="dl/${1##*/}" home status
+              curl -fsSL --retry 3 -o "$f" "$1"
+              curl -fsSL --retry 3 -o "$f$2" "$1$2"
+
+              home=$(mktemp -d)
+              gpg --homedir "$home" -q --import "$3" 2>/dev/null || true
+              status=$(gpg --homedir "$home" --status-fd 1 --verify "$f$2" "$f" 2>/dev/null || true)
+              if ! grep -q '^\[GNUPG:\] VALIDSIG ' <<< "$status"; then
+                  echo "::error::${f#dl/} has no valid signature by $3"
                   exit 1
               fi
-              curl -fsSL --retry 3 -o "dl/$f" "$1"
-              (cd dl && grep "  $f\$" SHA256SUMS | sha256sum -c -)
-              tar -xzf "dl/$f" -C "nginx/$OBJS/lib"
+              echo "${f#dl/}: signed by $3"
+
+              tar -xzf "$f" -C "nginx/$OBJS/lib"
           }
 
-          fetch "https://github.com/openssl/openssl/releases/download/$OPENSSL/$OPENSSL.tar.gz"
-          fetch "https://github.com/madler/zlib/releases/download/v${ZLIB#zlib-}/$ZLIB.tar.gz"
-          fetch "https://github.com/PCRE2Project/pcre2/releases/download/$PCRE/$PCRE.tar.gz"
+          fetch "https://github.com/openssl/openssl/releases/download/$OPENSSL/$OPENSSL.tar.gz" .asc keys/openssl.asc
+          fetch "https://github.com/madler/zlib/releases/download/v${ZLIB#zlib-}/$ZLIB.tar.gz" .asc keys/zlib.asc
+          fetch "https://github.com/PCRE2Project/pcre2/releases/download/$PCRE/$PCRE.tar.gz" .sig keys/pcre2.asc
 
           ls "nginx/$OBJS/lib"
           test -d "nginx/$OBJS/lib/$OPENSSL"
